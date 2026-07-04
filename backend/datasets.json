@@ -1,0 +1,30 @@
+[
+  {
+    "id": "leetcode-2230",
+    "name": "leetcode",
+    "url": "https://github.com/KaushalGoud/leet-problem",
+    "dateAdded": "2026-07-04",
+    "nodeCount": 10,
+    "description": "Cognee vectorized memory module for leetcode. Embedded source references.",
+    "files": [
+      "leetcode_main.py",
+      "utils.py",
+      "config.py"
+    ],
+    "code": ""
+  },
+  {
+    "id": "fusion-1819",
+    "name": "fusion",
+    "url": "https://github.com/fusionstackOfficial/Team-Void",
+    "dateAdded": "2026-07-04",
+    "nodeCount": 10,
+    "description": "Cognee vectorized memory module for fusion. Embedded source references.",
+    "files": [
+      "fusion_main.py",
+      "utils.py",
+      "config.py"
+    ],
+    "code": ""
+  }
+]
