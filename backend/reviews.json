@@ -1,1 +1,36 @@
-[]
+[
+  {
+    "id": "rev-4121",
+    "code": "// express-user-routes.ts\nimport { Router } from 'express';\nimport { db } from '../database';\n\nconst router = Router();\nrouter.delete('/users/purge/:email', async (req, res) => {\n  const sql = `DELETE FROM users WHERE email = '${req.params.email}'`;\n  const result = await db.query(sql); // Direct raw execution\n  return res.json({ deleted: true, count: result.rowCount });\n});",
+    "summary": "Potential SQL injection vulnerability due to raw SQL execution with user input.",
+    "date": "2026-07-04",
+    "status": "resolved",
+    "bullets": [
+      "The code uses string interpolation to construct a SQL query, which can lead to SQL injection attacks. Use parameterized queries or prepared statements instead.",
+      "Consider validating and sanitizing the email parameter before using it in the SQL query to enhance security.",
+      "Implement proper error handling to manage potential database errors gracefully."
+    ],
+    "contextUsed": [
+      "database-layer"
+    ],
+    "pastBugsWarning": null,
+    "feedback": null
+  },
+  {
+    "id": "rev-4105",
+    "code": "// prisma-repository.ts\nimport { PrismaClient } from '@prisma/client';\n\nexport class UserRepository {\n  async findActiveUsers() {\n    const prisma = new PrismaClient(); // Initialized inline\n    const users = await prisma.user.findMany({\n      where: { status: 'ACTIVE' },\n    });\n    // prisma.$disconnect() never called\n    return users;\n  }\n}",
+    "summary": "Potential connection leak due to PrismaClient not being properly disconnected.",
+    "date": "2026-07-04",
+    "status": "resolved",
+    "bullets": [
+      "The PrismaClient instance is created inline and not disconnected, which can lead to connection leaks and resource exhaustion.",
+      "Consider using a singleton pattern for PrismaClient to manage connections more efficiently.",
+      "Ensure to call prisma.$disconnect() after all database operations are completed to prevent lingering connections."
+    ],
+    "contextUsed": [
+      "database-layer"
+    ],
+    "pastBugsWarning": null,
+    "feedback": null
+  }
+]

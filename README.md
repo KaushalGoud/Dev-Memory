@@ -18,6 +18,127 @@ DevMemory ingests your codebase into a **persistent knowledge graph** (via [Cogn
 
 ---
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                            BROWSER (Next.js)                        │
+│                                                                       │
+│   /            /memory              /review                        │
+│   Ingest UI    Knowledge graph       Code review UI                 │
+│   + stats      visualization         + AI audit report              │
+│                                                                       │
+│              DevMemoryContext (React Context)                       │
+│         addDataset() · deleteDataset() · addReview()                │
+└───────────────────────────────┬───────────────────────────────────┘
+                                 │  fetch("/api/...")
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      FASTAPI BACKEND (main.py)                      │
+│                                                                       │
+│   POST /api/remember  ──────►  cognee.remember(code)                │
+│   POST /api/review    ──────►  cognee.recall(query) + LLM audit     │
+│   DELETE /api/forget  ──────►  cognee.forget(everything=True)       │
+│                                 + re-ingest survivors                │
+│                                                                       │
+│   datasets.json / reviews.json  ← local persistence (survives       │
+│                                     restarts, independent of graph)  │
+└─────────┬─────────────────────────────────────────┬─────────────────┘
+          │                                          │
+          ▼                                          ▼
+┌───────────────────────────┐          ┌─────────────────────────────┐
+│   COGNEE (local, OSS)      │          │   GitHub Models API          │
+│                             │          │   (https://models.github.ai) │
+│  add → cognify → search     │          │                               │
+│  (wrapped as remember/      │          │   GPT-4o-mini                │
+│   recall/forget)            │          │   → structured JSON audit    │
+│                             │          │     (summary, bullets,       │
+│  ┌───────────────────────┐ │          │      pastBugsWarning,        │
+│  │ Fastembed (local)      │ │          │      contextUsed)            │
+│  │ → embeddings, no       │ │          └─────────────────────────────┘
+│  │   network call needed  │ │
+│  └───────────────────────┘ │
+│                             │
+│  ┌───────────────────────┐ │
+│  │ SQLite knowledge graph │ │
+│  │ → entities, edges,     │ │
+│  │   semantic chunks      │ │
+│  └───────────────────────┘ │
+└───────────────────────────┘
+```
+
+**Key design decision:** the LLM (GitHub Models) only handles *reasoning* — extracting entities during ingestion and writing the audit during review. Embeddings run **entirely locally** via Fastembed. This matters because GitHub Models is free but rate-limited, and doesn't serve embedding models at all — splitting the two workloads is what makes the whole pipeline reliable.
+
+---
+
+## How It Works (Workflow)
+
+### 1. Ingest — "teaching" DevMemory a codebase
+
+```
+User pastes code/repo URL
+        │
+        ▼
+POST /api/remember { name, url, code }
+        │
+        ▼
+cognee.remember(content)
+   ├─ add()      → stores raw text
+   ├─ cognify()  → LLM (GPT-4o-mini) extracts entities & relationships
+   │               → Fastembed embeds each chunk locally
+   │               → builds/updates the knowledge graph (nodes + edges)
+   └─ improve()  → self-improvement pass on the graph
+        │
+        ▼
+Metadata saved to datasets.json (id, name, files, description, nodeCount)
+        │
+        ▼
+Frontend refetches /api/datasets → Memory Dashboard graph updates
+```
+
+### 2. Review — asking DevMemory to audit new code
+
+```
+User pastes a code diff
+        │
+        ▼
+POST /api/review { code }
+        │
+        ▼
+cognee.recall(query_text=code)
+   → searches the knowledge graph for related context
+   → e.g. "this touches the same DB pattern as database-layer"
+        │
+        ▼
+Recalled context + new code  →  GPT-4o-mini (GitHub Models)
+        │
+        ▼
+Structured JSON response:
+   { summary, bullets[], pastBugsWarning, contextUsed[] }
+        │
+        ▼
+Saved to reviews.json → shown in Review page with
+recurring-bug warning + feedback (👍/👎) buttons
+```
+
+### 3. Forget — removing a codebase cleanly
+
+```
+DELETE /api/forget/{id}
+        │
+        ▼
+Remove from datasets.json
+        │
+        ▼
+cognee.forget(everything=True)   → wipes entire graph
+        │
+        ▼
+Re-ingest all *surviving* datasets (background task)
+        → keeps the graph consistent, no orphaned/stale nodes
+```
+
+---
+
 ## Tech Stack
 
 | Layer | Tech |
@@ -32,9 +153,9 @@ DevMemory ingests your codebase into a **persistent knowledge graph** (via [Cogn
 
 ## Features
 
-- **Ingest Codebase Memory** — paste code or a repo URL, DevMemory builds a knowledge graph (entities, relationships, semantic chunks) from it.
+- **Ingest Codebase Memory** — paste code or a repo URL, DevMemory builds a knowledge graph from it.
 - **Memory Dashboard** — interactive visualization of the knowledge graph: which files, which codebases, how they connect.
-- **Review with Memory** — paste a code diff, get an AI audit that's aware of your project's history: past bugs, architectural conventions, security patterns already on file.
+- **Review with Memory** — paste a code diff, get an AI audit aware of your project's history.
 - **Recurring Bug Warnings** — flags when incoming code repeats a mistake already seen in memory.
 - **Forget / Purge** — remove a codebase from memory and cleanly re-index the rest.
 
@@ -58,7 +179,9 @@ cd Dev-Memory
 npm install
 ```
 
-### 2. Backend setup (virtual environment required — Ubuntu 24+ blocks global pip installs)
+### 2. Backend setup
+
+> Ubuntu 24+ blocks global `pip install` — a virtual environment is required.
 
 ```bash
 cd backend
@@ -70,14 +193,24 @@ pip install 'cognee[fastembed]'
 
 ### 3. Environment variables
 
-Copy [.env.example](.env.example) to `.env` and fill in the required values:
+Create `backend/.env` (do **not** commit this file):
 
 ```env
-COGNEE_API_KEY=
-LLM_API_KEY=your_github_personal_access_token_here
+# ── LLM Configuration (GitHub Models — free, GPT-4o-mini) ──────────────────
+LLM_PROVIDER=openai
+LLM_MODEL=openai/gpt-4o-mini
+LLM_ENDPOINT=https://models.github.ai/inference
+LLM_API_KEY=your_github_pat_here
+
+# ── Embedding Configuration (local, free, no rate limits) ──────────────────
+# GitHub Models does NOT serve embedding models — Fastembed runs locally
+# instead, so no endpoint or API key is needed here at all.
+EMBEDDING_PROVIDER=fastembed
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_DIMENSIONS=384
 ```
 
-> This must be a GitHub PAT with `models:read` scope — DevMemory routes all LLM calls through GitHub Models (`https://models.github.ai/inference`), which is free and doesn't need a separate OpenAI key. Embeddings run locally via Fastembed, so no embedding API key is needed either.
+> This must be a GitHub PAT with `models:read` scope. No OpenAI key, no Cognee Cloud key needed — LLM calls route through GitHub Models (free), and embeddings run locally via Fastembed.
 
 ### 4. Run the backend
 
@@ -106,43 +239,43 @@ Open [http://localhost:3000](http://localhost:3000).
 ```text
 src/
   app/
-    page.tsx           # Dashboard for ingesting codebases
-    memory/page.tsx    # Memory graph dashboard
+    page.tsx           # Dashboard — ingest form, stats, latest review
+    memory/page.tsx    # Memory Dashboard — knowledge graph visualization
     review/page.tsx    # Review UI with memory-aware analysis
   components/
   context/
+    dev-memory-context.tsx   # Shared state, all API calls
+
 backend/
-  app/main.py         # FastAPI server and API routes
-  datasets.json       # Local sample dataset storage
-  reviews.json        # Local sample review storage
+  app/main.py          # FastAPI server: ingest, review, forget, feedback
+  venv/                 # Python virtual environment (gitignored)
+  datasets.json          # Persisted codebase metadata
+  reviews.json            # Persisted review history
   requirements.txt
+  .env                     # LLM_API_KEY etc. (gitignored)
 ```
 
 ### API Endpoints
 
-The backend exposes these main routes:
-
-- `GET /api/datasets` — fetch saved codebase datasets
-- `GET /api/reviews` — fetch saved review results
-- `POST /api/remember` — ingest a codebase into memory
-- `POST /api/review` — run a memory-informed code review
-- `DELETE /api/forget/{dataset_id}` — remove a dataset from memory
-- `POST /api/reviews/{review_id}/feedback` — submit feedback for a review
-
-### Troubleshooting
-
-- Make sure your GitHub token is stored in `backend/.env` as `LLM_API_KEY`.
-- Activate the Python virtual environment before running the backend.
-- If you are using `uvicorn --reload`, keep the `--reload-exclude "*.json"` flag so the backend does not restart on its own JSON writes.
-- If dependencies fail to install, ensure `python3-venv` is available on your Linux system.
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/datasets` | Fetch saved codebase datasets |
+| `GET` | `/api/reviews` | Fetch saved review results |
+| `POST` | `/api/remember` | Ingest a codebase into memory |
+| `POST` | `/api/review` | Run a memory-informed code review |
+| `DELETE` | `/api/forget/{dataset_id}` | Remove a dataset from memory |
+| `POST` | `/api/reviews/{review_id}/feedback` | Submit 👍/👎 feedback for a review |
 
 ---
 
-## How It Works
+## Troubleshooting
 
-1. **Ingest** — `POST /api/remember` sends code to Cognee's `remember()`, which chunks it, extracts entities/relationships via LLM, embeds it locally with Fastembed, and stores it in a knowledge graph.
-2. **Review** — `POST /api/review` calls Cognee's `recall()` to pull relevant graph context for the incoming code, then sends that context + the new code to GPT-4o-mini (via GitHub Models) for a structured security/architecture audit.
-3. **Forget** — `DELETE /api/forget/{id}` wipes the graph and re-ingests the remaining codebases to keep memory consistent.
+- **`LLM_API_KEY not found`** → check `backend/.env` exists and is being loaded from the right path (`main.py`'s `ENV_PATH` should point one level up from `app/`, not two).
+- **`fastembed is required...`** → run `pip install 'cognee[fastembed]'` inside the activated venv.
+- **`ECONNRESET` / socket hang up on `/api/remember`** → missing `--reload-exclude "*.json"` flag; the reload watcher is restarting the server on its own JSON writes.
+- **`ECONNREFUSED 127.0.0.1:8000`** → backend isn't running; start it before the frontend makes requests.
+- **Structured output / invalid JSON errors** → GitHub Models' GPT-4o-mini doesn't reliably honor `response_format={"type": "json_object"}`; the backend relies on prompt instructions + defensive JSON parsing instead.
+- **`pip install` fails with "externally-managed-environment"** → you're not inside the activated venv; run `source venv/bin/activate` first.
 
 ---
 
