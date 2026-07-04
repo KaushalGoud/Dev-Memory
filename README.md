@@ -70,9 +70,10 @@ pip install 'cognee[fastembed]'
 
 ### 3. Environment variables
 
-Create `backend/.env`:
+Copy [.env.example](.env.example) to `.env` and fill in the required values:
 
 ```env
+COGNEE_API_KEY=
 LLM_API_KEY=your_github_personal_access_token_here
 ```
 
