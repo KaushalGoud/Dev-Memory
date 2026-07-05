@@ -28,5 +28,4 @@ backend/__pycache__/
 
 # vercel
 .vercel
-backend/datasets.json
-backend/reviews.json
+
