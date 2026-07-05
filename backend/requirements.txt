@@ -4,3 +4,4 @@ cognee>=1.2.0
 openai
 python-dotenv
 pydantic
+cognee[fastembed]
